@@ -5,7 +5,11 @@ import torch
 from scipy.stats import spearmanr
 from sklearn.metrics import precision_recall_fscore_support
 
+'''
+工作流程：读取ai生成的review文本 -> 将ai打分与人类真实的评审分数对比 -> 计算各种数学评估指标并输出markdown表格
+'''
 
+# 从ai生成的杂乱的review中，提取出结构化的论文评审内容，整理成一个干净的dict
 def get_pred(pred_context):
     """
     Extract and structure the prediction content from the model output.
@@ -37,7 +41,7 @@ def get_pred(pred_context):
         'Decision': ''
     }
 
-    # Parse each section from the prediction context
+    # Parse each section from the prediction context --- 按章节拆分评审文本
     for context in pred_context.split('## '):
         for key in pred:
             if key + ':\n\n' in context:
@@ -45,13 +49,13 @@ def get_pred(pred_context):
 
     return pred
 
-
+# 自动阅卷打分函数 ---- 读取模型的审稿预测结果，和人类专家的真实审稿结果做全面对比，计算出评分误差、相关性、录用决策准确率等指标，最终输出一份模型性能成绩单。
 def evaluate_deep_reviewer(data_path, mode='standard'):
     """
-    Evaluate the performance of DeepReviewer model.
+    评估 DeepReviewer 模型的性能
 
     Args:
-        data_path: Path to the DeepReviewer predictions
+        data_path: DeepReviewer 模型预测结果的路径
         mode: Evaluation mode ('fast', 'standard', or 'best')
 
     Returns:
@@ -64,17 +68,16 @@ def evaluate_deep_reviewer(data_path, mode='standard'):
         data = json.load(f)
 
     # Initialize lists for storing metrics
-    # MSE and MAE metrics
     rating_mse_list_n = []
     rating_mae_list_n = []
-    soundness_mse_list_n = []
+    soundness_mse_list_n = []   # soundness 稳健性
     soundness_mae_list_n = []
-    presentation_mse_list_n = []
+    presentation_mse_list_n = []    # 表现
     presentation_mae_list_n = []
-    contribution_mse_list_n = []
+    contribution_mse_list_n = []    # 贡献
     contribution_mae_list_n = []
 
-    # For spearman correlation
+    # For spearman correlation ---- 斯皮尔曼等级相关系数
     true_ratings = []
     pred_ratings = []
     true_soundness = []
@@ -84,7 +87,7 @@ def evaluate_deep_reviewer(data_path, mode='standard'):
     true_contribution = []
     pred_contribution = []
 
-    # For pairwise comparison
+    # For pairwise comparison ---- 成对比较
     paper_scores = []
 
     # For decision evaluation
@@ -92,19 +95,22 @@ def evaluate_deep_reviewer(data_path, mode='standard'):
     true_decisions = []
     pred_decisions = []
 
-    # Process each paper's review
+    # ⭐Process each paper's review
     for item in data:
         # Parse the prediction in the specified mode
         pred = get_pred(item[f'pred_{mode}_mode'])
         item['pred'] = pred
 
+        '''
+            针对每一篇论文，对比 AI 的评分与人类专家的评分，并计算各种误差和统计指标。
+        '''
         if 'pred' in item:
             try:
-                # Skip if no rating is provided
+                # Skip if no rating is provided ---- 跳过无效数据（无评分的论文）
                 if item['pred']['Rating'] == '':
                     continue
 
-                # Extract human review scores for this paper
+                # Extract human review scores for this paper ---- 提取人类专家的真实评分（标准答案）
                 rates = torch.tensor([int(r['content']['rating'][0]) for r in item['review']], dtype=torch.float32)
                 soundness = torch.tensor([int(r['content']['soundness'][0]) for r in item['review']],
                                          dtype=torch.float32)
@@ -113,7 +119,7 @@ def evaluate_deep_reviewer(data_path, mode='standard'):
                 contribution = torch.tensor([int(r['content']['contribution'][0]) for r in item['review']],
                                             dtype=torch.float32)
 
-                # Extract model predictions (handling possible newlines in output)
+                # Extract model predictions (handling possible newlines in output) ---- 提取ai评分
                 estimated_score = torch.tensor(float(item['pred']['Rating'].split('\n')[0]))
                 estimated_soundness = torch.tensor(float(item['pred']['Soundness'].split('\n')[0]))
                 estimated_presentation = torch.tensor(float(item['pred']['Presentation'].split('\n')[0]))
@@ -125,7 +131,7 @@ def evaluate_deep_reviewer(data_path, mode='standard'):
                 true_presentation_proxy_n = presentation.mean()
                 true_contribution_proxy_n = contribution.mean()
 
-                # Store scores for pairwise comparison
+                # Store scores for pairwise comparison ---- 存储数据 + 计算单篇误差（MSE/MAE）
                 paper_scores.append({
                     'true_rating': true_rate_proxy_n.item(),
                     'pred_rating': estimated_score.item(),
@@ -157,27 +163,32 @@ def evaluate_deep_reviewer(data_path, mode='standard'):
                 contribution_mse_list_n.append(torch.pow(estimated_contribution - true_contribution_proxy_n, 2).item())
                 contribution_mae_list_n.append(torch.abs(estimated_contribution - true_contribution_proxy_n).item())
 
-                # Process decision metrics
-                true_decision = item['decision'].lower()
-                pred_decision = item['pred']['Decision'].lower().strip()
+                # Process decision metrics ---- 评估录用/拒绝
+                true_decision = item['decision'].lower()    # 统一转换为小写
+                pred_decision = item['pred']['Decision'].lower().strip()    # .strip()去除首尾多余空格和换行符
 
                 # Normalize decision to accept/reject
+                # ai可能生成Strongly Accept，只要包含accept，统一转换。 否则一律视为拒绝（reject）
                 if 'accept' in pred_decision.lower():
                     pred_decision = 'accept'
                 else:
                     pred_decision = 'reject'
 
-                # Convert to binary for F1 calculation
+                # Convert to binary for F1 calculation ---- 二值化处理（为计算 F1 和 Precision/Recall 做准备）
                 if 'accept' in pred_decision:
                     pred_decisions.append(1)
                 else:
-                    pred_decisions.append(0)
+                    pred_decisions.append(0)    # [0, 1, 1, 0...]
                 if 'accept' in true_decision:
                     true_decisions.append(1)
                 else:
                     true_decisions.append(0)
 
-                # Calculate decision accuracy
+                # Calculate decision accuracy --- 计算即时准确率
+                '''
+                    原理：AI 说 accept 且真实结果包含 accept，记录为 1.0(float方便后续计算)
+                    最后，通过 torch.mean(torch.tensor(decision_acc)) 计算这些 0 和 1 的平均值，从而得到最终的总准确率。
+                '''
                 if pred_decision in true_decision:
                     decision_acc.append(1.)
                 else:
@@ -187,7 +198,7 @@ def evaluate_deep_reviewer(data_path, mode='standard'):
                 print(f"Error processing item: {e}")
                 pass
 
-    # Calculate pairwise comparison accuracy
+    # Calculate pairwise comparison accuracy ---- 计算两两比较准确率
     pairwise_accuracies = calculate_pairwise_accuracies(paper_scores)
 
     # Calculate mean values for all metrics
@@ -248,13 +259,14 @@ def evaluate_deep_reviewer(data_path, mode='standard'):
 
     return results
 
-
+# pairwise：两两对比 ---- 给模型两篇论文，它能否挑出那篇真实得分更高的
 def calculate_pairwise_accuracies(paper_scores):
     """
     Calculate pairwise accuracy for each metric by comparing rankings.
 
     Args:
         paper_scores: List of dictionaries containing true and predicted scores
+        paper_scores：包含真实分数和预测分数的词典列表
 
     Returns:
         dict: Pairwise accuracies for each metric
