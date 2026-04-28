@@ -6,6 +6,9 @@
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_curve, precision_recall_curve, auc
 
+'''
+    功能: 检测评估指标：ROC 曲线、PR 曲线、AUC 计算等
+'''
 # 15 colorblind-friendly colors
 COLORS = ["#0072B2", "#009E73", "#D55E00", "#CC79A7", "#F0E442",
             "#56B4E9", "#E69F00", "#000000", "#0072B2", "#009E73",

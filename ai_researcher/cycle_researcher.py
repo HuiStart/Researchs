@@ -1,7 +1,13 @@
 from ai_researcher.utils import get_paper_from_generated_text
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
+# vLLM 的核心是大量的 CUDA 和 C++ 算子，它是为 Linux 高性能计算环境设计的。
+# 虽然它支持 WSL2，但在原生 Windows 下编译会遇到大量的编译器不匹配和环境缺失问题。
+# 建议再linux上使用 vllm
 
+'''
+    功能与作用: 论文生成器。基于 CycleResearcher-ML模型（12B/72B/123B）
+'''
 
 class CycleResearcher:
     """

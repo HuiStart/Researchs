@@ -12,8 +12,9 @@ import ai_researcher.detect.custom_datasets
 import numpy as np
 import torch
 from ai_researcher.detect.model import load_tokenizer, load_model
-
-
+'''
+    功能: 数据构建、自定义数据集支持、评分计算等辅助模块。
+'''
 def save_data(output_file, args, data):
     # write args to file
     args_file = f"{output_file}.args.json"

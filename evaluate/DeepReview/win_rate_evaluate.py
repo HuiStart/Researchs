@@ -5,7 +5,10 @@ import random
 
 import openai
 from tqdm import tqdm
-
+'''
+    功能与作用: 双盲胜率评估（Side-by-Side）
+    让第三方AI作为裁判，对两份评审（如best 与 standard）进行盲评，从技术准确性、建设性价值、分析深度、表达清晰度4个维度判定胜负/平局，统计最终胜率
+'''
 
 # Configuration
 class Config:

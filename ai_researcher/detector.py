@@ -1,5 +1,9 @@
 from .detect import FastDetectGPT as _FastDetectGPT
 
+'''
+    功能与作用: AI 生成检测器.对外暴露 AIDetector 类，封装了底层的 FastDetectGPT，
+    用于检测一篇论文是否是机器生成的，返回 概率 和 置信度等级
+'''
 class AIDetector:
     """
     A wrapper for detecting machine-generated text using FastDetectGPT.

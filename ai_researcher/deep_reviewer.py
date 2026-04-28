@@ -9,6 +9,12 @@ from vllm import LLM, SamplingParams
 # Helper Functions for Best Mode
 # Adapted from the provided Flask app (main.py)
 
+'''
+    基于 DeepReviewer 模型（14B/7B）,支持三种模式
+    Fast：快速生成review
+    Standard：模拟多审稿人 + 自我验证
+    Best：先让模型提出3个背景知识问题，再调用 OpenScholar API 检索真实文献答案，最后结合检索结果生成更可靠的 deepreview
+'''
 def extract_questions_from_content(content: str) -> list[str]:
     """Extract questions from the questions block (e.g., \boxed_questions{...})."""
     questions = []

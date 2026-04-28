@@ -6,7 +6,17 @@ from scipy.stats import spearmanr
 from sklearn.metrics import precision_recall_fscore_support
 
 '''
-工作流程：读取ai生成的review文本 -> 将ai打分与人类真实的评审分数对比 -> 计算各种数学评估指标并输出markdown表格
+     功能与作用: 自动化阅卷打分
+     读取 sample.json 中AI生成的评审和人类真实评审，计算
+        评分误差 Rating/Soundness/Presentation/Contribution 的MSE/MAE
+        相关性：Spearman相关系数
+        决策准确率：Accept/Reject 的 Accuracy / F1 Score
+        Pairwise Acc(成对比较准确率)：两两对比论文，看AI能否正确判断哪篇得分更高，最终输出md表格形式的成绩单
+
+工作流程：
+    读取ai生成的review文本 
+    -> 将ai打分与人类真实的评审分数对比 
+    -> 计算各种数学评估指标并输出markdown表格
 '''
 
 # 从ai生成的杂乱的review中，提取出结构化的论文评审内容，整理成一个干净的dict
@@ -201,7 +211,7 @@ def evaluate_deep_reviewer(data_path, mode='standard'):
     # Calculate pairwise comparison accuracy ---- 计算两两比较准确率
     pairwise_accuracies = calculate_pairwise_accuracies(paper_scores)
 
-    # Calculate mean values for all metrics
+    # Calculate mean values for all metrics ---- 计算全局平均误差
     rating_mse_n = torch.mean(torch.tensor(rating_mse_list_n)).item()
     rating_mae_n = torch.mean(torch.tensor(rating_mae_list_n)).item()
     soundness_mse_n = torch.mean(torch.tensor(soundness_mse_list_n)).item()
@@ -217,7 +227,7 @@ def evaluate_deep_reviewer(data_path, mode='standard'):
     presentation_spearman_val, _ = spearmanr(true_presentation, pred_presentation)
     contribution_spearman_val, _ = spearmanr(true_contribution, pred_contribution)
 
-    # Format Spearman values
+    # Format Spearman values ---- 数据清洗与格式化
     rating_spearman = f"{rating_spearman_val:.4f}" if not isinstance(rating_spearman_val, float) or not (
                 rating_spearman_val is None) else 'nan'
     soundness_spearman = f"{soundness_spearman_val:.4f}" if not isinstance(soundness_spearman_val, float) or not (
@@ -233,6 +243,11 @@ def evaluate_deep_reviewer(data_path, mode='standard'):
     decision_acc_val = torch.mean(torch.tensor(decision_acc)).item()
     precision, recall, f1_val, _ = precision_recall_fscore_support(true_decisions, pred_decisions, average='macro')
     f1_score = float(f1_val)
+    '''
+        为什么要加 average='macro'？
+            学术界拒稿率很高（可能 80% 都是拒稿）。如果 AI 像个大笨蛋一样，闭着眼睛全部给拒稿，它的准确率依然高达 80%。
+            使用macro宏平均，会强制分别计算 “accept”和“reject”的F1，然后再取平均。
+    '''
 
     # Prepare results dictionary
     results = {
@@ -260,6 +275,7 @@ def evaluate_deep_reviewer(data_path, mode='standard'):
     return results
 
 # pairwise：两两对比 ---- 给模型两篇论文，它能否挑出那篇真实得分更高的
+# 成对准确率（Pairwise Accuracy）比均方误差（MSE）更贴近真实的业务需求。
 def calculate_pairwise_accuracies(paper_scores):
     """
     Calculate pairwise accuracy for each metric by comparing rankings.
@@ -273,10 +289,10 @@ def calculate_pairwise_accuracies(paper_scores):
     """
     total_pairs = 0
     correct_pairs = {
-        'rating': 0,
-        'soundness': 0,
-        'presentation': 0,
-        'contribution': 0
+        'rating': 0,    # 综合评分猜对的次数
+        'soundness': 0, # 合理性猜对的次数
+        'presentation': 0,  # 展示度猜对的次数
+        'contribution': 0   # 贡献度猜对的次数
     }
 
     # Get all possible paper pairs using combinations
@@ -316,6 +332,7 @@ def calculate_pairwise_accuracies(paper_scores):
     return pairwise_accuracies
 
 
+# 将dict格式的results转换成markdown格式
 def create_markdown_table(results):
     """
     Create a markdown table for displaying evaluation results.

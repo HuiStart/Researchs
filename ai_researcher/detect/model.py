@@ -7,7 +7,10 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 import time
 import os
-
+'''
+    模型加载工具
+    封装了从 HuggingFace/本地加载 AutoModelForCausalLM 和 AutoTokenizer 的逻辑，支持fp16，不同tokenizer的配置等
+'''
 def from_pretrained(cls, model_name, kwargs, cache_dir):
     # use local model if it exists
     local_path = os.path.join(cache_dir, 'local.' + model_name.replace("/", "_"))

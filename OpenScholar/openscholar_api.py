@@ -13,6 +13,16 @@ from src.open_scholar import OpenScholar
 from src.open_scholar import process_input_data
 from src.use_search_apis import search_semantic_scholar
 
+'''
+    功能与作用: Flask API 服务入口。
+    对外暴露batch_ask接口，接收问题列表
+    内部流程
+        1.调用小模型，生成 Semantic Scholar 搜索关键词
+        2.调用 Semantic Scholar API
+        3.通过 OpenScholar，llm（Llama-3.1_OpenScholar-8B）生成带引用的学术回答
+        4.返回结果，关键词 和 费用
+    
+'''
 class OpenScholarAPI:
     def __init__(self, config):
         self.config = config

@@ -13,7 +13,10 @@ from ai_researcher.detect.data_builder import load_data
 from ai_researcher.detect.metrics import get_roc_metrics, get_precision_recall_metrics
 from ai_researcher.detect.model import load_tokenizer, load_model
 
-
+'''
+    功能: 检测核心算法。 ---- 检测文本是否由特定语言模型生成
+    基于采样差异原理，使用打分模型 和 参考模型 计算文本的criterion score，并估计为机器生成的概率，支持单条和批量检测
+'''
 def get_samples(logits, labels):
     assert logits.shape[0] == 1
     assert labels.shape[0] == 1

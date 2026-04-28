@@ -1,7 +1,12 @@
 from ai_researcher.utils import get_reviewer_score
 from transformers import AutoTokenizer
-from vllm import LLM, SamplingParams
+from vllm import LLM, SamplingParams    # vLLM 库（一个高性能 LLM 推理框架）
 
+'''
+    核心功能：输入一篇paper，自动生成一份包含摘要、健全性、贡献度、评分以及最终录用建议的专业评审报告
+    功能与作用: 论文评审器。
+    模拟4位不同审稿人对论文进行评审，输出： Summary、Soundness、Presentation、Contribution、Rating、Accept/Reject决策等结构化结果。支持批量处理（batch_size=10）
+'''
 
 class CycleReviewer:
     """
@@ -10,10 +15,10 @@ class CycleReviewer:
 
     def __init__(self,
                  model_size="8B",
-                 custom_model_name=None,
+                 custom_model_name=None,    # 直接输入一个 Hugging Face 的模型路径或名称，覆盖默认映射。
                  device="cuda",
-                 tensor_parallel_size=1,
-                 gpu_memory_utilization=0.95):
+                 tensor_parallel_size=1,    # 张量并行大小，用于多 GPU 场景（例如设为 4，表示用 4 张显卡跑一个大模型）
+                 gpu_memory_utilization=0.95):  # 控制显存占用率，默认 0.95 意味着它会尽可能多地占据显存以提高吞吐量。
         """
         Initialize the CycleReviewer.
 
@@ -24,6 +29,7 @@ class CycleReviewer:
             tensor_parallel_size (int): Number of GPUs to use for tensor parallelism
             gpu_memory_utilization (float): Fraction of GPU memory to use
         """
+        # 映射三种不同规模的model
         model_mapping = {
             "8B": "WestlakeNLP/CycleReviewer-ML-Llama3.1-8B",
             "70B": "WestlakeNLP/CycleReviewer-ML-Llama3.1-70B",
@@ -42,10 +48,11 @@ class CycleReviewer:
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
 
         # Load model using vLLM
+        # 使用vllm引擎加载model
         self.model = LLM(
             model=model_name,
             tensor_parallel_size=tensor_parallel_size,
-            max_model_len=50000,
+            max_model_len=50000,    # 很大了
             gpu_memory_utilization=gpu_memory_utilization
         )
 
@@ -87,12 +94,10 @@ class CycleReviewer:
 
         # Prepare paper context
         if type(paper_context) == str:
-            paper_context = [paper_context]
-
-
+            paper_context = [paper_context]     # 转换成list
 
         generated_reviews = []
-        batch_size = 10
+        batch_size = 10     # 每 10 篇论文为一个 Batch 进行并行推理
         for n in range(0,len(paper_context),batch_size):
             # Apply chat template
             prompts = []

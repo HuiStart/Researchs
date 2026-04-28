@@ -11,7 +11,11 @@ Before running this script, please ensure:
 import requests
 import json
 import time
-
+'''
+    功能与作用: API
+    调用示例脚本，演示如何请求单条/批量问题、带标题检索、检查服务状态 
+  等。
+'''
 # API Configuration
 API_BASE_URL = "http://localhost:38015"
 BATCH_ASK_ENDPOINT = f"{API_BASE_URL}/batch_ask"

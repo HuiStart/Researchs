@@ -13,6 +13,15 @@ from nltk import sent_tokenize
 import src.instructions as instructions
 from FlagEmbedding import FlagReranker
 
+'''
+    功能与作用: OpenScholar 核心类。实现完整的 RAG Pipeline：,专门用于科学文献问答和综述生成
+        检索与重排序：基于 BGE Cross-Encoder
+        对检索到的论文段落重排序，支持引用数加权（norm_cite）。
+        生成：构造带引用的 Prompt，调用大模型生成回答。
+        反馈迭代：生成自我反馈（Feedback），根据反馈编辑答案，甚至二次检索补充文献。
+        事后归因（Post-hoc Attribution）：为生成内容中缺少引用的句子自动补全引用标注。
+        支持 run() 单条处理和 run_batch() 批量处理。
+'''
 nlp = spacy.load('en_core_web_sm')
 
 # To compute API costs based on October 2023 pricing available at https://openai.com/ja-JP/api/pricing/

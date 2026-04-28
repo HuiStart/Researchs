@@ -1,6 +1,11 @@
 """
 Utility functions for ai-researcher package.
 """
+
+'''
+    功能与作用: 工具函数库
+    
+'''
 def get_paper_from_generated_text(generated_text):
     """
     Parse and extract different sections from a generated academic paper text.
