@@ -1,10 +1,54 @@
 import re
 import requests
 import json
+from collections.abc import Iterable
 from copy import deepcopy
 
-from transformers import AutoTokenizer
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
 from vllm import LLM, SamplingParams
+
+
+def _install_transformers_vllm_tokenizer_compat() -> None:
+    """Restore tokenizer properties expected by vLLM 0.10 with Transformers 5."""
+    if not hasattr(PreTrainedTokenizerBase, "special_tokens_map_extended"):
+
+        @property
+        def special_tokens_map_extended(self):
+            special_map = getattr(self, "_special_tokens_map", None)
+            special_attrs = getattr(self, "SPECIAL_TOKENS_ATTRIBUTES", ())
+
+            if special_map is None:
+                return dict(getattr(self, "special_tokens_map", {}))
+
+            return {
+                attr: special_map[attr]
+                for attr in special_attrs
+                if special_map.get(attr) is not None
+            }
+
+        PreTrainedTokenizerBase.special_tokens_map_extended = special_tokens_map_extended
+
+    if not hasattr(PreTrainedTokenizerBase, "all_special_tokens_extended"):
+
+        @property
+        def all_special_tokens_extended(self):
+            all_toks = []
+            for attr_value in self.special_tokens_map_extended.values():
+                if isinstance(attr_value, Iterable) and not isinstance(attr_value, (str, bytes)):
+                    values = attr_value
+                else:
+                    values = [attr_value]
+
+                for token in values:
+                    if token is not None and token not in all_toks:
+                        all_toks.append(token)
+            return all_toks
+
+        PreTrainedTokenizerBase.all_special_tokens_extended = all_special_tokens_extended
+
+
+_install_transformers_vllm_tokenizer_compat()
 
 # Helper Functions for Best Mode
 # Adapted from the provided Flask app (main.py)
@@ -117,11 +161,21 @@ class DeepReviewer:
     """
 
     def __init__(self,
-                 model_size="14B",
+                 model_size="7B",
                  custom_model_name=None,
                  device="cuda",
+                 backend="vllm",
                  tensor_parallel_size=1,
-                 gpu_memory_utilization=0.95):
+                 gpu_memory_utilization=0.95,
+                 max_model_len=90000,
+                 max_num_seqs=256,
+                 tokenizer_mode="slow",
+                 enforce_eager=False,
+                 disable_custom_all_reduce=False,
+                 dtype="auto",
+                 hf_token=None,
+                 cache_dir=None,
+                 trust_remote_code=True):
         """
         Initialize the DeepReviewer.
 
@@ -129,8 +183,18 @@ class DeepReviewer:
             model_size (str): Size of the default model to use. Options: "14B", "70B", "123B"
             custom_model_name (str, optional): Custom model name to override default mapping
             device (str): Device to run the model on. Default is "cuda"
+            backend (str): Inference backend, "vllm" or "transformers".
             tensor_parallel_size (int): Number of GPUs to use for tensor parallelism
             gpu_memory_utilization (float): Fraction of GPU memory to use
+            max_model_len (int): Maximum context length for vLLM.
+            max_num_seqs (int): vLLM scheduler concurrency / sampler warmup size.
+            tokenizer_mode (str): vLLM tokenizer mode, "slow" is safer for this model.
+            enforce_eager (bool): Disable CUDA graphs to avoid kernel-specific issues.
+            disable_custom_all_reduce (bool): Disable vLLM custom all-reduce kernels.
+            dtype (str): vLLM dtype, for example "auto" or "float16".
+            hf_token (str | None): Optional Hugging Face token.
+            cache_dir (str | None): Optional Hugging Face cache dir.
+            trust_remote_code (bool): Whether to trust Hugging Face remote code.
         """
         model_mapping = {
             "14B": "WestlakeNLP/DeepReviewer-14B",
@@ -145,23 +209,139 @@ class DeepReviewer:
                 raise ValueError(f"Invalid model size. Choose from {list(model_mapping.keys())}")
             model_name = model_mapping[model_size]
 
-        # Load tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.backend = backend
+        self.device = device
+        self.model_name = model_name
+        self.max_model_len = max_model_len
+        self.trust_remote_code = trust_remote_code
 
-        # Load model using vLLM
-        self.model = LLM(
-            model=model_name,
-            tensor_parallel_size=tensor_parallel_size,
-            max_model_len=90000,
-            gpu_memory_utilization=gpu_memory_utilization
+        # Load tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            token=hf_token,
+            cache_dir=cache_dir,
+            trust_remote_code=trust_remote_code,
         )
+        if self.tokenizer.pad_token_id is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        self.model = None
+        if backend == "vllm":
+            self.model = LLM(
+                model=model_name,
+                tensor_parallel_size=tensor_parallel_size,
+                max_model_len=max_model_len,
+                max_num_seqs=max_num_seqs,
+                tokenizer_mode=tokenizer_mode,
+                gpu_memory_utilization=gpu_memory_utilization,
+                enforce_eager=enforce_eager,
+                disable_custom_all_reduce=disable_custom_all_reduce,
+                dtype=dtype,
+                trust_remote_code=trust_remote_code,
+            )
+        elif backend == "transformers":
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                token=hf_token,
+                cache_dir=cache_dir,
+                trust_remote_code=trust_remote_code,
+                torch_dtype=self._torch_dtype_from_arg(dtype),
+                device_map="auto",
+                low_cpu_mem_usage=True,
+            )
+            self.model.eval()
+        else:
+            raise ValueError('backend must be "vllm" or "transformers"')
 
         # Store model configuration for reference
-        self.model_name = model_name
         self.model_config = {
+            "backend": backend,
             "tensor_parallel_size": tensor_parallel_size,
-            "gpu_memory_utilization": gpu_memory_utilization
+            "gpu_memory_utilization": gpu_memory_utilization,
+            "max_model_len": max_model_len,
+            "max_num_seqs": max_num_seqs,
+            "tokenizer_mode": tokenizer_mode,
+            "enforce_eager": enforce_eager,
+            "disable_custom_all_reduce": disable_custom_all_reduce,
+            "dtype": dtype,
         }
+
+    @staticmethod
+    def _torch_dtype_from_arg(dtype):
+        if dtype == "auto":
+            return "auto"
+        if dtype in {"bfloat16", torch.bfloat16}:
+            return torch.bfloat16
+        return torch.float16
+
+    def _build_prompt(self, system_prompt, paper_text, max_tokens):
+        max_input_tokens = max(512, self.max_model_len - max_tokens)
+
+        def render_prompt(user_content):
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ]
+            return self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+
+        prompt = render_prompt(paper_text)
+        input_ids = self.tokenizer(prompt, add_special_tokens=False).input_ids
+        if len(input_ids) <= max_input_tokens:
+            return prompt
+
+        empty_prompt = render_prompt("")
+        overhead = len(self.tokenizer(empty_prompt, add_special_tokens=False).input_ids)
+        marker = "\n\n[The middle of the paper was truncated to fit the model context.]\n\n"
+        marker_ids = self.tokenizer(marker, add_special_tokens=False).input_ids
+        paper_ids = self.tokenizer(paper_text, add_special_tokens=False).input_ids
+
+        def truncate_paper(token_budget):
+            if token_budget <= 0:
+                return ""
+            if len(paper_ids) <= token_budget:
+                return paper_text
+            if token_budget > len(marker_ids) + 128:
+                content_budget = token_budget - len(marker_ids)
+                head_budget = max(1, int(content_budget * 0.65))
+                tail_budget = max(1, content_budget - head_budget)
+                head = self.tokenizer.decode(paper_ids[:head_budget], skip_special_tokens=False)
+                tail = self.tokenizer.decode(paper_ids[-tail_budget:], skip_special_tokens=False)
+                return head + marker + tail
+            return self.tokenizer.decode(paper_ids[:token_budget], skip_special_tokens=False)
+
+        paper_budget = max(0, max_input_tokens - overhead - 32)
+        while True:
+            prompt = render_prompt(truncate_paper(paper_budget))
+            input_ids = self.tokenizer(prompt, add_special_tokens=False).input_ids
+            if len(input_ids) <= max_input_tokens or paper_budget == 0:
+                return prompt
+            paper_budget = max(0, paper_budget - (len(input_ids) - max_input_tokens) - 32)
+
+    def _generate_with_transformers(self, prompts, max_tokens):
+        results = []
+        for prompt in prompts:
+            inputs = self.tokenizer(
+                prompt,
+                return_tensors="pt",
+                add_special_tokens=False,
+            )
+            model_device = self.model.device
+            inputs = {key: value.to(model_device) for key, value in inputs.items()}
+            with torch.inference_mode():
+                output_ids = self.model.generate(
+                    **inputs,
+                    do_sample=True,
+                    temperature=0.4,
+                    top_p=0.95,
+                    max_new_tokens=max_tokens,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id,
+                )
+            new_tokens = output_ids[0, inputs["input_ids"].shape[-1]:]
+            results.append(self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip())
+        return results
 
     def _generate_system_prompt(self, mode="Standard Mode", reviewer_num=4):
         """
@@ -218,20 +398,16 @@ class DeepReviewer:
             if mode != "Best Mode":
                 prompts = []
                 for single_paper_context in current_batch_contexts:
-                    messages = [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": single_paper_context}
-                    ]
-                    input_text = self.tokenizer.apply_chat_template(
-                        messages, tokenize=False, add_generation_prompt=True
-                    )
-                    prompts.append(input_text)
+                    prompts.append(self._build_prompt(system_prompt, single_paper_context, max_tokens))
 
-                sampling_params = SamplingParams(temperature=0.4, top_p=0.95, max_tokens=max_tokens)
-                outputs = self.model.generate(prompts, sampling_params)
+                if self.backend == "vllm":
+                    sampling_params = SamplingParams(temperature=0.4, top_p=0.95, max_tokens=max_tokens)
+                    outputs = self.model.generate(prompts, sampling_params)
+                    generated_texts = [output.outputs[0].text for output in outputs]
+                else:
+                    generated_texts = self._generate_with_transformers(prompts, max_tokens)
 
-                for output in outputs:
-                    generated_text = output.outputs[0].text
+                for generated_text in generated_texts:
                     review = self._parse_review(generated_text)
                     generated_reviews_batch.append(review)
             else: # Best Mode - Process one by one from the batch due to sequential nature of API calls
