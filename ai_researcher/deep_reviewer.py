@@ -169,7 +169,7 @@ class DeepReviewer:
                  gpu_memory_utilization=0.95,
                  max_model_len=90000,
                  max_num_seqs=256,
-                 tokenizer_mode="slow",
+                 tokenizer_mode="auto",
                  enforce_eager=False,
                  disable_custom_all_reduce=False,
                  dtype="auto",
@@ -188,7 +188,7 @@ class DeepReviewer:
             gpu_memory_utilization (float): Fraction of GPU memory to use
             max_model_len (int): Maximum context length for vLLM.
             max_num_seqs (int): vLLM scheduler concurrency / sampler warmup size.
-            tokenizer_mode (str): vLLM tokenizer mode, "slow" is safer for this model.
+            tokenizer_mode (str): vLLM tokenizer mode. Use "auto" for this model so vLLM can load the fast tokenizer.
             enforce_eager (bool): Disable CUDA graphs to avoid kernel-specific issues.
             disable_custom_all_reduce (bool): Disable vLLM custom all-reduce kernels.
             dtype (str): vLLM dtype, for example "auto" or "float16".
@@ -319,6 +319,26 @@ class DeepReviewer:
                 return prompt
             paper_budget = max(0, paper_budget - (len(input_ids) - max_input_tokens) - 32)
 
+    @staticmethod
+    def _generation_prefill(mode):
+        if mode == "Fast Mode":
+            return "\\boxed_review{\n## Summary:\n\n"
+        return ""
+
+    def _vllm_sampling_params(self, max_tokens):
+        stop_token_ids = []
+        if self.tokenizer.eos_token_id is not None:
+            stop_token_ids.append(self.tokenizer.eos_token_id)
+        return SamplingParams(
+            temperature=0.3,
+            top_p=0.9,
+            repetition_penalty=1.08,
+            frequency_penalty=0.1,
+            max_tokens=max_tokens,
+            stop=["<｜User｜>", "<｜end▁of▁sentence｜>"],
+            stop_token_ids=stop_token_ids or None,
+        )
+
     def _generate_with_transformers(self, prompts, max_tokens):
         results = []
         for prompt in prompts:
@@ -363,7 +383,57 @@ class DeepReviewer:
             prompt = f"""You are an expert academic reviewer tasked with providing a thorough and balanced evaluation of research papers. Your thinking mode is Standard Mode. In this mode, you should review by simulating {reviewer_num} different reviewers, and use self-verification to double-check any paper deficiencies identified. Finally, provide complete review results."""
             return prompt + simreviewer_prompt
         elif mode == "Fast Mode":
-            return "You are an expert academic reviewer tasked with providing a thorough and balanced evaluation of research papers. Your thinking mode is Fast Mode. In this mode, you should quickly provide the review results."
+            return """You are an expert academic reviewer tasked with providing a thorough and balanced evaluation of research papers. Your thinking mode is Fast Mode. In this mode, you should quickly provide the review results.
+
+Output exactly one review in this format:
+
+\\boxed_review{
+## Summary:
+
+...
+
+## Soundness:
+
+<numeric score>
+
+## Presentation:
+
+<numeric score>
+
+## Contribution:
+
+<numeric score>
+
+## Strengths:
+
+...
+
+## Weaknesses:
+
+...
+
+## Suggestions:
+
+...
+
+## Questions:
+
+...
+
+## Rating:
+
+<numeric score>
+
+## Confidence:
+
+<numeric score>
+
+## Decision:
+
+<Accept or Reject>
+}
+
+Keep every prose section concise. Do not repeat points. Always include all numeric scores and the decision."""
         else:
             return "You are an expert academic reviewer tasked with providing a thorough and balanced evaluation of research papers."
 
@@ -396,16 +466,17 @@ class DeepReviewer:
             current_batch_contexts = paper_contexts[i:i + batch_size]
             
             if mode != "Best Mode":
+                prefill = self._generation_prefill(mode)
                 prompts = []
                 for single_paper_context in current_batch_contexts:
-                    prompts.append(self._build_prompt(system_prompt, single_paper_context, max_tokens))
+                    prompts.append(self._build_prompt(system_prompt, single_paper_context, max_tokens) + prefill)
 
                 if self.backend == "vllm":
-                    sampling_params = SamplingParams(temperature=0.4, top_p=0.95, max_tokens=max_tokens)
+                    sampling_params = self._vllm_sampling_params(max_tokens)
                     outputs = self.model.generate(prompts, sampling_params)
-                    generated_texts = [output.outputs[0].text for output in outputs]
+                    generated_texts = [prefill + output.outputs[0].text for output in outputs]
                 else:
-                    generated_texts = self._generate_with_transformers(prompts, max_tokens)
+                    generated_texts = [prefill + text for text in self._generate_with_transformers(prompts, max_tokens)]
 
                 for generated_text in generated_texts:
                     review = self._parse_review(generated_text)
